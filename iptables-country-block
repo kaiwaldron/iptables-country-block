@@ -1,0 +1,70 @@
+#!/usr/bin/env perl
+
+# 
+# Add iptable rules to block traffic by countries. Uses country CIDR block lists 
+# provided by ipdeny.com:
+#
+# http://www.ipdeny.com/ipblocks/
+#
+# Usage: iptables-country-block <comma separated list of 2 character iso country codes>
+#
+# For example:
+#
+# ./iptables-country-block ua ru cn in id sg am az by ee ge kz kg lv lt md tj tm uz dz ao bj bw bf bi cm cf ci cd dj eg er et ga gm gh gw ke ls lr ly mg mw ml mr mu ma mz na ne ng rw sn sc sl za sd sz tz tg tn ug zm zw
+#
+# This script will use iptables-save to write a backup of existing iptables
+# configuration to the current working directory.
+#
+# kaiwaldron@gmail.com
+#
+
+use strict;
+use warnings;
+use LWP::Simple qw/ mirror /;
+use File::Temp qw/ tempdir /;
+use Archive::Extract;
+use constant {
+    ALL_ZONES_URL => "http://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz",
+    LOCAL_FILE => "/tmp/all-zones.tar.gz",
+    IPTABLES => "/sbin/iptables",
+    IPTABLES_SAVE => "/sbin/iptables-save"
+};
+
+sub load_zones {
+    mirror(ALL_ZONES_URL, LOCAL_FILE) || die (sprintf("Problem fetching zones file from %s: %s", ALL_ZONES_URL, $!));
+    my $extractor = Archive::Extract->new(archive => LOCAL_FILE);
+    my $tempdir = tempdir(CLEANUP => 1);
+    $extractor->extract(to => $tempdir);
+    return $tempdir;
+}
+
+sub load_blocks($) {
+    my $countries = shift;
+    my @blocks = ();
+    my $zones_dir = load_zones;
+    foreach my $country (@$countries) {
+        open(FILE, sprintf("%s/%s.zone", $zones_dir, $country)) || die ("Could not read file: " . $!);
+        while (<FILE>) {
+            chomp;
+            next if ($_ =~ /^$/);
+            push(@blocks, $_);
+        }
+        close(FILE);
+    }
+    return @blocks;
+}
+
+die("./iptables-country-block <space sep list of 2 character iso country codes>") if (!@ARGV);
+
+my $save_cmd = sprintf("%s > iptables.bak.%s", IPTABLES_SAVE, time());
+`$save_cmd`;
+
+foreach my $cidr (load_blocks(\@ARGV)) {
+    my $cmd1 = sprintf("%s -A INPUT -s %s -j DROP", IPTABLES, $cidr);
+    printf("%s\n",$cmd1);
+    `$cmd1`;
+    my $cmd2 = sprintf("%s -A OUTPUT -d %s -j DROP", IPTABLES, $cidr);
+    printf("%s\n",$cmd2);
+    `$cmd2`;
+}
+
